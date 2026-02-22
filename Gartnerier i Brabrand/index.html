@@ -84,7 +84,19 @@
             maxZoom: 19
         });
 
-        // Historisk kort som overlay (tiles fra 1912)
+        // Historiske kort som overlays - tiles fra forskellige perioder
+        var historiskKort1840_1890 = L.tileLayer('../1840-1890/{z}/{x}/{y}.png', {
+            attribution: '© Kortarkivet 1840-1890',
+            minZoom: 10,
+            maxZoom: 19,
+            tileSize: 256,
+            opacity: 1.0,
+            bounds: [[55.9, 9.9], [56.4, 10.4]],
+            noWrap: true,
+            errorTileUrl: '',
+            updateWhenIdle: true
+        });
+
         var historiskKort1912 = L.tileLayer('./Kort_fra_1912/{z}/{x}/{y}.png', {
             attribution: '© Erik Oehlerich',
             minZoom: 10,
@@ -97,8 +109,32 @@
             updateWhenIdle: true
         });
 
+        var historiskKort1953_1976 = L.tileLayer('../1953-1976/{z}/{x}/{y}.png', {
+            attribution: '© Kortarkivet 1953-1976',
+            minZoom: 10,
+            maxZoom: 19,
+            tileSize: 256,
+            opacity: 1.0,
+            bounds: [[55.9, 9.9], [56.4, 10.4]],
+            noWrap: true,
+            errorTileUrl: '',
+            updateWhenIdle: true
+        });
+
+        var historiskKort1980 = L.tileLayer('../1980/{z}/{x}/{y}.png', {
+            attribution: '© Kortarkivet 1980',
+            minZoom: 10,
+            maxZoom: 19,
+            tileSize: 256,
+            opacity: 1.0,
+            bounds: [[55.9, 9.9], [56.4, 10.4]],
+            noWrap: true,
+            errorTileUrl: '',
+            updateWhenIdle: true
+        });
+
         // Samling af historiske overlays (bruges til initial visning og opacity-kontrol)
-        var historiskeOverlays = [historiskKort1912];
+        var historiskeOverlays = [historiskKort1840_1890, historiskKort1912, historiskKort1953_1976, historiskKort1980];
 
         // Definér base og overlay maps
         var baseMaps = {
@@ -199,9 +235,12 @@
         // koordinatInfo.addTo(map);
         // map.on('click', clickHandler);
 
-        // Opdateret overlay maps — historisk lag og koordinat-vælger
+        // Opdateret overlay maps — alle historiske lag og koordinat-vælger
         var overlayMaps = {
             "Brabrand 1912": historiskKort1912,
+            "Kort 1840-1890": historiskKort1840_1890,
+            "Kort 1953-1976": historiskKort1953_1976,
+            "Kort 1980": historiskKort1980,
             "Koordinat vælger": koordinatGruppe
         };
 
