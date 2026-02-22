@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brabrand</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"/>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-mouse-position@1.2.0/src/L.Control.MousePosition.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-mouse-position@1.2.0/src/L.Control.MousePosition.css"/>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        #map { height: 100vh; width: 100vw; }
+        .leaflet-control-geocoder {
+            background: white;
+            border-radius: 4px;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.65);
+        }
+        /* Kort-overskrift */
+        #map-title {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1002;
+            background: rgba(255,255,255,0.95);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 16px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="map-title">Gartnerier i Brabrand – kort fra 1912</div>
+    <script>
+        var map = L.map('map', {
+            center: [56.1540154,10.1021835],
+            zoom: 15,
+            maxBounds: [[55.9, 9.9], [56.4, 10.4]], // Meget løsere bounds
+            maxBoundsViscosity: 0.3, // Blødere grænser
+            attributionControl: false // fjern standard Leaflet-attribution
+        });
+
+        // Base maps
+        // OpenStreetMap Standard
+        var osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19
+        });
+
+        // ESRI Satellit kort
+        var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: '© ESRI',
+            maxZoom: 19
+        });
+
+        // OpenTopoMap (topografisk kort)
+        var topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenTopoMap',
+            maxZoom: 17
+        });
+
+        // ESRI World Street Map
+        var streets = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: '© ESRI',
+            maxZoom: 19
+        });
+
+        // OpenStreetMap Humanitarian
+        var humanitarian = L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors, Humanitarian OpenStreetMap Team',
+            maxZoom: 19
+        });
+
+        // CartoDB Dark Matter (mørkt tema)
+        var dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '© CartoDB',
+            maxZoom: 19
+        });
+
+        // Historisk kort som overlay (tiles fra 1912)
+        var historiskKort1912 = L.tileLayer('./Kort%20fra%2019112/{z}/{x}/{y}.png', {
+            attribution: '© Erik Oehlerich',
+            minZoom: 10,
+            maxZoom: 19,
+            tileSize: 256,
+            opacity: 1.0,  // Fuld synlighed
+            bounds: [[55.9, 9.9], [56.4, 10.4]], // Meget større område omkring Brabrand
+            noWrap: true,
+            errorTileUrl: '', // Skjul fejl-tiles
+            updateWhenIdle: true
+        });
+
+        // Samling af historiske overlays (bruges til initial visning og opacity-kontrol)
+        var historiskeOverlays = [historiskKort1912];
+
+        // Definér base og overlay maps
+        var baseMaps = {
+            "OpenStreetMap": osm,
+            "Satellit": satellite,
+            "Topografisk": topo,
+            "Vejkort": streets,
+            "Humanitarian": humanitarian,
+            "Mørkt tema": dark
+        };
+
+        // Opret koordinat-vælger gruppe
+        var koordinatGruppe = L.layerGroup();
+        
+        // Marker og kontrol (ikke tilføjet til map før laget aktiveres)
+        var marker = null;
+        var koordinatInfo = L.control({position: 'topleft'});
+        
+        koordinatInfo.onAdd = function(map) {
+            this._div = L.DomUtil.create('div', 'koordinat-info');
+            // Minimal stil så boksen er lille og diskret
+            this._div.style.background = 'rgba(255,255,255,0.95)';
+            this._div.style.padding = '6px 8px';
+            this._div.style.margin = '10px';
+            this._div.style.border = '1px solid rgba(0,0,0,0.2)';
+            this._div.style.borderRadius = '4px';
+            this._div.style.fontSize = '13px';
+            this._div.style.boxShadow = '0 1px 4px rgba(0,0,0,0.2)';
+            this._div.innerHTML = '<strong>Valgte koordinater</strong><br><span style="font-size:12px;color:#333">Klik på kortet for at vælge</span>';
+            return this._div;
+        };
+
+        // Klik-handler: sæt markør, vis koordinater og kopier automatisk
+        var clickHandler = function(e) {
+            if (marker) {
+                koordinatGruppe.removeLayer(marker);
+            }
+            marker = L.circleMarker(e.latlng, {
+                radius: 6,
+                color: '#d9534f',
+                weight: 1,
+                fillColor: '#d9534f',
+                fillOpacity: 0.9
+            });
+            koordinatGruppe.addLayer(marker);
+
+            var lat = e.latlng.lat.toFixed(6);
+            var lng = e.latlng.lng.toFixed(6);
+            var coords = lat + ', ' + lng;
+
+            // Opdater kontrolboksen
+            koordinatInfo._div.innerHTML = '<strong>Valgte koordinater</strong><br>' +
+                                           '<div style="margin-top:4px;">Lat: ' + lat + '<br>Lng: ' + lng + '</div>' +
+                                           '<div style="margin-top:6px;color:#2e7d32;font-weight:600;">Kopieret til udklipsholder</div>';
+
+            // Kopier til udklipsholder (kræver HTTPS eller localhost)
+            navigator.clipboard.writeText(coords).then(function() {
+                // Vis kort bekræftelse i konsol (valgfrit)
+                console.log('Koordinater kopieret: ' + coords);
+            }).catch(function(err){
+                console.warn('Kunne ikke kopiere koordinater:', err);
+            });
+
+            // Gør beskeden midlertidig (tilbage til instruks efter 2s)
+            setTimeout(function() {
+                if (koordinatInfo._div) {
+                    koordinatInfo._div.innerHTML = '<strong>Valgte koordinater</strong><br><span style="font-size:12px;color:#333">Klik på kortet for at vælge</span>';
+                }
+            }, 2000);
+        };
+
+        // Håndter aktivering/deaktivering via layer-control
+        map.on('overlayadd', function(e) {
+            if (e.layer === koordinatGruppe) {
+                // Vis kontrol og begynd lytte efter klik
+                koordinatInfo.addTo(map);
+                map.on('click', clickHandler);
+            }
+        });
+        map.on('overlayremove', function(e) {
+            if (e.layer === koordinatGruppe) {
+                // Fjern kontrol og stop lytning; ryd markør
+                koordinatInfo.remove();
+                map.off('click', clickHandler);
+                if (marker) {
+                    koordinatGruppe.removeLayer(marker);
+                    marker = null;
+                }
+            }
+        });
+        
+        // Hvis brugeren vil have koordinatværktøjet aktivt ved load, kan man tilføje:
+        // koordinatGruppe.addTo(map);
+        // koordinatInfo.addTo(map);
+        // map.on('click', clickHandler);
+
+        // Opdateret overlay maps — historisk lag og koordinat-vælger
+        var overlayMaps = {
+            "Brabrand 1912": historiskKort1912,
+            "Koordinat vælger": koordinatGruppe
+        };
+
+        // Tilføj layer control så menuen med kortlag vises
+        var layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+        // Start med 1912-kortet aktivt.
+        if (historiskKort1912) {
+            historiskKort1912.addTo(map);
+            if (typeof historiskKort1912.setZIndex === 'function') historiskKort1912.setZIndex(100);
+        }
+
+        // Opacity-kontrol til historiske overlay (kompakt, foldbar)
+        var opacityControl = L.control({ position: 'topright' });
+        opacityControl.onAdd = function(map) {
+            var div = L.DomUtil.create('div', 'opacity-control');
+            div.style.background = 'rgba(255,255,255,0.95)';
+            div.style.padding = '4px';
+            div.style.margin = '10px';
+            div.style.border = '1px solid rgba(0,0,0,0.15)';
+            div.style.borderRadius = '4px';
+            div.style.fontSize = '12px';
+            div.style.width = '140px';
+            // foldbar header + skjult indhold
+            div.innerHTML = '<div id="opacityHeader" style="cursor:pointer;font-weight:600;display:flex;justify-content:space-between;align-items:center;">' +
+                            '<span>Historisk</span><span style="font-size:12px;" id="opacityToggleIcon">▾</span></div>' +
+                            '<div id="opacityContent" style="display:block;margin-top:6px;">' +
+                            '<div style="font-size:12px;margin-bottom:4px;">Opacity</div>' +
+                            '<input id="overlayOpacity" type="range" min="0" max="100" value="100" style="width:120px;"><br>' +
+                            '<div style="font-size:11px;margin-top:4px;"><span id="opacityVal">100%</span></div>' +
+                            '</div>';
+            L.DomEvent.disableClickPropagation(div);
+            return div;
+        };
+        opacityControl.addTo(map);
+
+        // fold/ud for opacity
+        (function(){
+            var hdr = document.getElementById('opacityHeader');
+            var content = document.getElementById('opacityContent');
+            var icon = document.getElementById('opacityToggleIcon');
+            if (hdr && content && icon) {
+                hdr.addEventListener('click', function(){
+                    if (content.style.display === 'none') { content.style.display = 'block'; icon.textContent = '▾'; }
+                    else { content.style.display = 'none'; icon.textContent = '▸'; }
+                });
+            }
+        })();
+
+        document.getElementById('overlayOpacity').addEventListener('input', function(e) {
+            var p = parseInt(this.value, 10) / 100;
+            document.getElementById('opacityVal').textContent = this.value + '%';
+            // Sæt opacity for alle historiske overlays (loop for fremtidig udvidelse)
+            historiskeOverlays.forEach(function(layer){
+                if (layer && typeof layer.setOpacity === 'function') {
+                    layer.setOpacity(p);
+                }
+            });
+        });
+
+        // Opret lag til lokaliteter (så det kan toggles)
+        var lokaliteterLayer = L.layerGroup();
+        // Liste over alle markører (bruges til filtrering)
+        var allMarkers = [];
+        // Maks antal punkter der vises
+        var MAX_POINTS = 100;
+        
+        // Year-filter funktioner og UI (kompakt, foldbar)
+        var yearFilterControl = L.control({ position: 'topright' });
+        yearFilterControl.onAdd = function(map) {
+            var div = L.DomUtil.create('div', 'year-filter-control');
+            div.style.background = 'rgba(255,255,255,0.95)';
+            div.style.padding = '4px';
+            div.style.margin = '10px';
+            div.style.border = '1px solid rgba(0,0,0,0.15)';
+            div.style.borderRadius = '4px';
+            div.style.fontSize = '12px';
+            div.style.width = '160px';
+            div.innerHTML = '<div id="yearHeader" style="cursor:pointer;font-weight:600;display:flex;justify-content:space-between;align-items:center;">' +
+                            '<span>Filter år</span><span style="font-size:12px;" id="yearToggleIcon">▾</span></div>' +
+                            '<div id="yearContent" style="display:block;margin-top:6px;font-size:12px;">' +
+                            '<div style="font-size:11px;margin-bottom:4px;">Fra: <span id="yrMinLbl">—</span> Til: <span id="yrMaxLbl">—</span></div>' +
+                            '<input id="yrMin" type="range" min="1900" max="2100" value="1900" style="width:140px;"><br>' +
+                            '<input id="yrMax" type="range" min="1900" max="2100" value="2100" style="width:140px;margin-top:6px;"><br>' +
+                            '<label style="font-size:11px;margin-top:6px;display:block;"><input id="yrUnknown" type="checkbox" checked> Vis ukendte år</label>' +
+                            '</div>';
+            L.DomEvent.disableClickPropagation(div);
+            return div;
+        };
+        yearFilterControl.addTo(map);
+
+        // fold/ud for year filter
+        (function(){
+            var hdr = document.getElementById('yearHeader');
+            var content = document.getElementById('yearContent');
+            var icon = document.getElementById('yearToggleIcon');
+            if (hdr && content && icon) {
+                hdr.addEventListener('click', function(){
+                    if (content.style.display === 'none') { content.style.display = 'block'; icon.textContent = '▾'; }
+                    else { content.style.display = 'none'; icon.textContent = '▸'; }
+                });
+            }
+        })();
+
+        function updateTypeCounts() {
+            var counts = {
+                offentlig: 0,
+                erhverv: 0,
+                bolig: 0,
+                enfamilie: 0
+            };
+
+            allMarkers.forEach(function(m) {
+                if (lokaliteterLayer.hasLayer(m)) {
+                    var type = (m._meta && m._meta.type) ? m._meta.type.toLowerCase() : '';
+                    if (type.indexOf('offent') !== -1 || type.indexOf('offentlig') !== -1) {
+                        counts.offentlig++;
+                    } else if (type.indexOf('erhverv') !== -1) {
+                        counts.erhverv++;
+                    } else if (type.indexOf('boliggrupp') !== -1 || type.indexOf('boliggruppe') !== -1) {
+                        counts.bolig++;
+                    } else if (type.indexOf('enfamil') !== -1 || type.indexOf('en-famil') !== -1 || type.indexOf('en familie') !== -1) {
+                        counts.enfamilie++;
+                    } else if (type.indexOf('bolig') !== -1) {
+                        counts.bolig++;
+                    }
+                }
+            });
+
+            // Opdater tællerne i oversigten
+            var offentligEl = document.getElementById('count-offentlig');
+            var erhvervEl = document.getElementById('count-erhverv');
+            var boligEl = document.getElementById('count-bolig');
+            var enfamilieEl = document.getElementById('count-enfamilie');
+
+            if (offentligEl) offentligEl.textContent = '(' + counts.offentlig + ')';
+            if (erhvervEl) erhvervEl.textContent = '(' + counts.erhverv + ')';
+            if (boligEl) boligEl.textContent = '(' + counts.bolig + ')';
+            if (enfamilieEl) enfamilieEl.textContent = '(' + counts.enfamilie + ')';
+        }
+
+        function applyYearFilter() {
+            var min = parseInt(document.getElementById('yrMin').value, 10);
+            var max = parseInt(document.getElementById('yrMax').value, 10);
+            var showUnknown = document.getElementById('yrUnknown').checked;
+            allMarkers.forEach(function(m) {
+                var y = m._year;
+                var inRange = false;
+                if (isFinite(y)) inRange = (y >= min && y <= max);
+                else inRange = showUnknown;
+
+                // tilføj/fjern fra lokaliteterLayer
+                if (inRange) {
+                    if (!lokaliteterLayer.hasLayer(m)) lokaliteterLayer.addLayer(m);
+                } else {
+                    if (lokaliteterLayer.hasLayer(m)) lokaliteterLayer.removeLayer(m);
+                }
+            });
+            
+            // Opdater tællerne efter filtering
+            updateTypeCounts();
+        }
+
+        function updateYearFilterUI(min, max) {
+            var minInput = document.getElementById('yrMin');
+            var maxInput = document.getElementById('yrMax');
+            var minLbl = document.getElementById('yrMinLbl');
+            var maxLbl = document.getElementById('yrMaxLbl');
+            if (!minInput || !maxInput) return;
+            minInput.min = min;
+            minInput.max = max;
+            maxInput.min = min;
+            maxInput.max = max;
+            minInput.value = min;
+            maxInput.value = max;
+            minLbl.textContent = min;
+            maxLbl.textContent = max;
+
+            // events
+            minInput.oninput = function() {
+                var v = parseInt(this.value,10);
+                if (v > parseInt(maxInput.value,10)) { this.value = maxInput.value; v = parseInt(this.value,10); }
+                minLbl.textContent = v;
+                applyYearFilter();
+            };
+            maxInput.oninput = function() {
+                var v = parseInt(this.value,10);
+                if (v < parseInt(minInput.value,10)) { this.value = minInput.value; v = parseInt(this.value,10); }
+                maxLbl.textContent = v;
+                applyYearFilter();
+            };
+            var unk = document.getElementById('yrUnknown');
+            unk.onchange = applyYearFilter;
+        }
+
+        // Cache til image index
+        var imageIndexCache = null;
+        
+        // Indlæs image index ved start
+        async function loadImageIndex() {
+            if (imageIndexCache) return imageIndexCache;
+            try {
+                var response = await fetch('./image_index.json');
+                imageIndexCache = await response.json();
+                return imageIndexCache;
+            } catch (e) {
+                console.error('Kunne ikke indlæse image index:', e);
+                return {};
+            }
+        }
+        
+        // Galleri state
+        var currentGalleryIndex = {};
+        var currentZoomLevel = {};
+        // Vis plantegninger i popups? Standard: false (skjult indtil klar)
+        var SHOW_PLANTEGNINGER = false;
+        
+        // Funktion til at åbne billede i fuldskærm
+        window.openFullscreen = function(mappeNr) {
+            var container = document.getElementById('gallery-container-' + mappeNr);
+            if (!container) return;
+            
+            var images = JSON.parse(container.getAttribute('data-images') || '[]');
+            var startIndex = currentGalleryIndex[mappeNr] || 0;
+            if (images.length === 0) return;
+            
+            var currentFsIndex = startIndex;
+            var currentFsZoom = 100;
+            
+            // Opret fuldskærms overlay
+            var overlay = document.createElement('div');
+            overlay.id = 'fullscreen-overlay';
+            overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);z-index:10000;display:flex;align-items:center;justify-content:center;overflow:auto;';
+            
+            var imgContainer = document.createElement('div');
+            imgContainer.style.cssText = 'position:relative;display:flex;align-items:center;justify-content:center;';
+            
+            var img = document.createElement('img');
+            img.id = 'fs-image';
+            img.src = images[currentFsIndex].path;
+            img.style.cssText = 'max-width:95vw;max-height:95vh;object-fit:contain;transition:transform 0.2s;';
+            
+            // Navigation pile
+            var prevBtn = document.createElement('div');
+            prevBtn.innerHTML = '‹';
+            prevBtn.style.cssText = 'position:fixed;left:20px;top:50%;transform:translateY(-50%);width:50px;height:50px;background:rgba(255,255,255,0.2);color:white;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;font-size:30px;user-select:none;';
+            prevBtn.onclick = function(e) {
+                e.stopPropagation();
+                currentFsIndex--;
+                if (currentFsIndex < 0) currentFsIndex = images.length - 1;
+                img.src = images[currentFsIndex].path;
+                currentFsZoom = 100;
+                updateFsZoom();
+                updateFsCounter();
+            };
+            
+            var nextBtn = document.createElement('div');
+            nextBtn.innerHTML = '›';
+            nextBtn.style.cssText = 'position:fixed;right:20px;top:50%;transform:translateY(-50%);width:50px;height:50px;background:rgba(255,255,255,0.2);color:white;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;font-size:30px;user-select:none;';
+            nextBtn.onclick = function(e) {
+                e.stopPropagation();
+                currentFsIndex++;
+                if (currentFsIndex >= images.length) currentFsIndex = 0;
+                img.src = images[currentFsIndex].path;
+                currentFsZoom = 100;
+                updateFsZoom();
+                updateFsCounter();
+            };
+            
+            // Zoom kontrolelementer
+            var zoomControls = document.createElement('div');
+            zoomControls.style.cssText = 'position:fixed;top:20px;left:20px;display:flex;gap:10px;';
+            
+            var zoomOutBtn = document.createElement('div');
+            zoomOutBtn.innerHTML = '−';
+            zoomOutBtn.style.cssText = 'width:40px;height:40px;background:rgba(255,255,255,0.2);color:white;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;font-size:24px;user-select:none;';
+            zoomOutBtn.onclick = function(e) {
+                e.stopPropagation();
+                currentFsZoom -= 25;
+                if (currentFsZoom < 50) currentFsZoom = 50;
+                updateFsZoom();
+            };
+            
+            var zoomInBtn = document.createElement('div');
+            zoomInBtn.innerHTML = '+';
+            zoomInBtn.style.cssText = 'width:40px;height:40px;background:rgba(255,255,255,0.2);color:white;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;font-size:24px;user-select:none;';
+            zoomInBtn.onclick = function(e) {
+                e.stopPropagation();
+                currentFsZoom += 25;
+                if (currentFsZoom > 300) currentFsZoom = 300;
+                updateFsZoom();
+            };
+            
+            var zoomLabel = document.createElement('div');
+            zoomLabel.id = 'fs-zoom-label';
+            zoomLabel.style.cssText = 'width:60px;height:40px;background:rgba(255,255,255,0.2);color:white;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:14px;user-select:none;';
+            zoomLabel.textContent = '100%';
+            
+            zoomControls.appendChild(zoomOutBtn);
+            zoomControls.appendChild(zoomInBtn);
+            zoomControls.appendChild(zoomLabel);
+            
+            // Tæller
+            var counter = document.createElement('div');
+            counter.id = 'fs-counter';
+            counter.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:white;padding:10px 20px;border-radius:4px;font-size:16px;';
+            counter.textContent = (currentFsIndex + 1) + ' / ' + images.length + ' - ' + images[currentFsIndex].type;
+            
+            // Luk knap
+            var closeBtn = document.createElement('div');
+            closeBtn.innerHTML = '✕';
+            closeBtn.style.cssText = 'position:fixed;top:20px;right:30px;color:white;font-size:40px;cursor:pointer;user-select:none;z-index:10001;';
+            closeBtn.onclick = function() {
+                document.body.removeChild(overlay);
+            };
+            
+            function updateFsZoom() {
+                img.style.width = currentFsZoom + '%';
+                img.style.maxWidth = 'none';
+                img.style.height = 'auto';
+                zoomLabel.textContent = currentFsZoom + '%';
+            }
+            
+            function updateFsCounter() {
+                counter.textContent = (currentFsIndex + 1) + ' / ' + images.length + ' - ' + images[currentFsIndex].type;
+            }
+            
+            imgContainer.appendChild(img);
+            overlay.appendChild(imgContainer);
+            overlay.appendChild(prevBtn);
+            overlay.appendChild(nextBtn);
+            overlay.appendChild(zoomControls);
+            overlay.appendChild(counter);
+            overlay.appendChild(closeBtn);
+            
+            // Luk ved klik på baggrund
+            overlay.onclick = function(e) {
+                if (e.target === overlay) {
+                    document.body.removeChild(overlay);
+                }
+            };
+            
+            document.body.appendChild(overlay);
+        };
+        
+        // Funktion til zoom
+        window.zoomImage = function(mappeNr, delta) {
+            var img = document.getElementById('gallery-image-' + mappeNr);
+            if (!img) return;
+            
+            var currentZoom = currentZoomLevel[mappeNr] || 100;
+            currentZoom += delta;
+            if (currentZoom < 50) currentZoom = 50;
+            if (currentZoom > 300) currentZoom = 300;
+            
+            currentZoomLevel[mappeNr] = currentZoom;
+            img.style.width = currentZoom + '%';
+            img.style.maxWidth = 'none';
+            img.style.height = 'auto';
+        };
+        
+        // Reset zoom når billede skifter
+        window.resetZoom = function(mappeNr) {
+            var img = document.getElementById('gallery-image-' + mappeNr);
+            if (!img) return;
+            
+            currentZoomLevel[mappeNr] = 100;
+            img.style.width = 'auto';
+            img.style.maxWidth = '100%';
+            img.style.height = 'auto';
+        };
+        
+        // Global funktion til navigation (kaldt fra inline onclick)
+        window.galleryNav = function(mappeNr, direction) {
+            try {
+                var index = currentGalleryIndex[mappeNr] || 0;
+                var container = document.getElementById('gallery-container-' + mappeNr);
+                if (!container) return false;
+                
+                var totalImages = parseInt(container.getAttribute('data-total') || '0');
+                if (totalImages === 0) return false;
+                
+                index += direction;
+                if (index < 0) index = totalImages - 1;
+                if (index >= totalImages) index = 0;
+                
+                currentGalleryIndex[mappeNr] = index;
+                window.resetZoom(mappeNr);
+                updateGalleryDisplay(mappeNr);
+            } catch (e) {
+                console.error('Fejl ved navigation:', e);
+            }
+            return false;
+        };
+        
+        // Funktion til at vise næste/forrige billede
+        function navigateGallery(mappeNr, direction) {
+            return window.galleryNav(mappeNr, direction);
+        }
+        
+        // Opdater galleri visning
+        function updateGalleryDisplay(mappeNr) {
+            try {
+                var container = document.getElementById('gallery-container-' + mappeNr);
+                if (!container) return;
+                
+                var images = JSON.parse(container.getAttribute('data-images') || '[]');
+                var index = currentGalleryIndex[mappeNr] || 0;
+                
+                if (images.length === 0) return;
+                
+                var imgData = images[index];
+                var imgElement = document.getElementById('gallery-image-' + mappeNr);
+                var counter = document.getElementById('gallery-counter-' + mappeNr);
+                var caption = document.getElementById('gallery-caption-' + mappeNr);
+                
+                if (imgElement) {
+                    imgElement.src = imgData.path;
+                }
+                if (counter) {
+                    counter.textContent = (index + 1) + ' / ' + images.length;
+                }
+                if (caption) {
+                    caption.textContent = imgData.type;
+                }
+            } catch (e) {
+                console.error('Fejl ved opdatering af galleri:', e);
+            }
+        }
+        
+        // Funktion til at indlæse billeder for et givet mappe-nummer
+        async function loadImagesForMarker(mappeNr) {
+            var container = document.getElementById('popup-images-' + mappeNr);
+            if (!container) return;
+            
+            var imageIndex = await loadImageIndex();
+            var mappeData = imageIndex[String(mappeNr)] || { billeder: [], plantegninger: [] };
+            
+            var billedPath = './Billeder_og_tegninger/Billeder/Mappe ' + mappeNr + '/';
+            var plantegningPath = './Billeder_og_tegninger/Plantegninger/Mappe ' + mappeNr + '/';
+            
+            // Saml alle billeder i én liste
+            var allImages = [];
+            
+            if (mappeData.billeder && mappeData.billeder.length > 0) {
+                mappeData.billeder.forEach(function(img) {
+                    allImages.push({
+                        path: billedPath + encodeURIComponent(img),
+                        type: 'Billede'
+                    });
+                });
+            }
+            
+            // Tilføj plantegninger kun hvis det er slået til (standard: false)
+            if (SHOW_PLANTEGNINGER && mappeData.plantegninger && mappeData.plantegninger.length > 0) {
+                mappeData.plantegninger.forEach(function(img) {
+                    allImages.push({
+                        path: plantegningPath + encodeURIComponent(img),
+                        type: 'Plantegning'
+                    });
+                });
+            }
+            
+            if (allImages.length === 0) {
+                container.innerHTML = '<div style="margin-top:10px;color:#999;font-style:italic;">Ingen billeder tilgængelige, men der arbejdes på det.</div>';
+                return;
+            }
+            
+            // Reset til første billede
+            currentGalleryIndex[mappeNr] = 0;
+            
+            // Opret galleri HTML
+            var html = '<div id="gallery-container-' + mappeNr + '" data-total="' + allImages.length + '" data-images=\'' + JSON.stringify(allImages) + '\' style="margin-top:10px;">' +
+                       '<div style="position:relative;text-align:center;min-height:200px;display:flex;align-items:center;justify-content:center;background:#f5f5f5;border-radius:4px;">' +
+                       '<img id="gallery-image-' + mappeNr + '" src="' + allImages[0].path + '" ' +
+                       'style="max-width:100%;max-height:400px;width:auto;height:auto;display:block;" ' +
+                       'onerror="this.src=\'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'300\' height=\'200\'%3E%3Crect fill=\'%23f0f0f0\' width=\'300\' height=\'200\'/%3E%3Ctext x=\'50%25\' y=\'50%25\' text-anchor=\'middle\' dy=\'.3em\' fill=\'%23999\'%3EBilledet kunne ikke indlæses%3C/text%3E%3C/svg%3E\'"/>' +
+                       '<div onclick="event.stopPropagation(); window.galleryNav(' + mappeNr + ', -1); return false;" style="position:absolute;left:5px;top:50%;transform:translateY(-50%);width:40px;height:40px;background:rgba(0,0,0,0.5);color:white;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;font-size:20px;user-select:none;">‹</div>' +
+                       '<div onclick="event.stopPropagation(); window.galleryNav(' + mappeNr + ', 1); return false;" style="position:absolute;right:5px;top:50%;transform:translateY(-50%);width:40px;height:40px;background:rgba(0,0,0,0.5);color:white;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;font-size:20px;user-select:none;">›</div>' +
+                       '<div style="position:absolute;top:5px;right:5px;">' +
+                       '<div onclick="event.stopPropagation(); window.openFullscreen(' + mappeNr + '); return false;" title="Åbn i fuldskærm" style="width:30px;height:30px;background:rgba(0,0,0,0.5);color:white;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;font-size:14px;user-select:none;">⛶</div>' +
+                       '</div>' +
+                       '<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.6);color:white;padding:8px;font-size:12px;display:flex;justify-content:space-between;align-items:center;">' +
+                       '<div id="gallery-caption-' + mappeNr + '" style="font-weight:600;">' + allImages[0].type + '</div>' +
+                       '<div id="gallery-counter-' + mappeNr + '" style="font-weight:600;">1 / ' + allImages.length + '</div>' +
+                       '</div>' +
+                       '</div>' +
+                       '</div>';
+            
+            container.innerHTML = html;
+            
+            // Stop propagation på container
+            setTimeout(function() {
+                var galleryContainer = document.getElementById('gallery-container-' + mappeNr);
+                if (galleryContainer) {
+                    galleryContainer.onclick = function(e) { e.stopPropagation(); };
+                }
+            }, 50);
+        }
+
+        // Funktion: indlæs Excel (xlsx) fra en sti og tilføj punkter til lokaliteterLayer
+        function loadExcelToMap(path) {
+            console.log('Forsøger at indlæse Excel fra:', path);
+            fetch(encodeURI(path)).then(function(resp) {
+                console.log('Fetch response:', resp.status, resp.statusText);
+                if (!resp.ok) throw new Error('Fetch fejlede: ' + resp.status + ' ' + resp.statusText);
+                return resp.arrayBuffer();
+            }).then(function(ab) {
+                var workbook;
+                try {
+                    workbook = XLSX.read(ab, {type: 'array'});
+                } catch (err) {
+                    console.error('XLSX.read fejlede:', err);
+                    // Prøv fallback som binary string
+                    try {
+                        var s = new Uint8Array(ab);
+                        var binary = Array.prototype.map.call(s, function(ch){ return String.fromCharCode(ch); }).join('');
+                        workbook = XLSX.read(binary, {type: 'binary'});
+                        console.warn('Brugte binary-fallback til at læse workbook');
+                    } catch (err2) {
+                        throw err2;
+                    }
+                }
+
+                console.log('Workbook sheets:', workbook.SheetNames);
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+                var rows = XLSX.utils.sheet_to_json(worksheet, {defval: ''});
+
+                console.log('Excel rækker (parsed):', rows.length);
+                if (rows.length === 0) {
+                    console.warn('Ingen rækker fundet i arket:', firstSheetName, '-- tjek kolonneoverskrifter.');
+                }
+
+                var added = 0;
+                rows.forEach(function(row, i) {
+                    if (added >= MAX_POINTS) return;
+                    if (i < 3) console.log('Række', i, row); // vis et par rækker til debugging
+
+                    var projekt = row['Projekt'] || row['Project'] || row['projekt'] || '';
+                    var adresse = row['Adresse'] || row['Address'] || row['adresse'] || '';
+                    var årstal = row['Årstal'] || row['Aarstal'] || row['År'] || row['Year'] || '';
+                    var typeByg = row['Type af byggeri'] || row['Type'] || row['type'] || '';
+                    var note = row['evt. note'] || row['evt. Note'] || row['Note'] || row['Bemærkning'] || row['Note/Comment'] || row['note'] || row['bemærkning'] || row['Notat'] || row['notat'] || row['Notes'] || row['notes'] || '';
+                    
+                    // Debug: vis note-værdi for første 3 rækker
+                    if (i < 3) console.log('Note værdi for række', i, ':', note);
+
+                    var lat = null, lng = null;
+                    // Støt flere formater: separate kolonner, "lat,lng", semikolon, komma decimal mv.
+                    function parseNumber(v) {
+                        if (v === null || v === undefined) return NaN;
+                        var s = String(v).trim();
+                        if (s === '') return NaN;
+                        s = s.replace(',', '.'); // decimalkomma -> punktum
+                        return parseFloat(s);
+                    }
+
+                    if (row['Lat'] !== undefined && row['Lng'] !== undefined) {
+                        lat = parseNumber(row['Lat']);
+                        lng = parseNumber(row['Lng']);
+                    } else if (row['Latitude'] !== undefined && row['Longitude'] !== undefined) {
+                        lat = parseNumber(row['Latitude']);
+                        lng = parseNumber(row['Longitude']);
+                    } else if (row['Koordinater'] || row['Koordinat'] || row['Coordinates']) {
+                        var coordStr = (row['Koordinater'] || row['Koordinat'] || row['Coordinates']).toString();
+                        // accepter "lat, lng", "lng;lat" osv.
+                        var m = coordStr.match(/[-+]?\d+[.,]?\d*/g);
+                        if (m && m.length >= 2) {
+                            var a = parseNumber(m[0]);
+                            var b = parseNumber(m[1]);
+                            // best guess: hvis første værdi > 90 antag lng,lat byttet
+                            if (Math.abs(a) > 90 && Math.abs(b) <= 90) {
+                                lng = a; lat = b;
+                            } else {
+                                lat = a; lng = b;
+                            }
+                        }
+                    }
+
+                    // ekstra: prøv felter med semikolon eller space-separeret
+                    if ((!isFinite(lat) || !isFinite(lng)) && (row['Coord'] || row['coord'])) {
+                        var c = (row['Coord'] || row['coord']).toString().match(/[-+]?\d+[.,]?\d*/g);
+                        if (c && c.length >= 2) { lat = parseNumber(c[0]); lng = parseNumber(c[1]); }
+                    }
+
+                    if (!isFinite(lat) || !isFinite(lng)) {
+                        console.warn('Ugyldige koordinater for række (springes over):', row);
+                        return;
+                    }
+
+                    // Hvis lat/lng byttet (fx lat > 90), prøv at byt
+                    if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
+                        console.warn('Ser ud som byttede koordinater, bytter automatisk for række:', row);
+                        var tmp = lat; lat = lng; lng = tmp;
+                    }
+
+                    // bestem farve ud fra typen af byggeri
+                    var typeKey = (typeByg || '').toLowerCase();
+                    var fillColor = '#666666'; // fallback (ukendt)
+                    if (typeKey.indexOf('offent') !== -1 || typeKey.indexOf('offentlig') !== -1) {
+                        fillColor = '#B22222'; // røde: Offentlige bygninger
+                    } else if (typeKey.indexOf('erhverv') !== -1) {
+                        fillColor = '#1E90FF'; // blå: Erhvervsbyggerier
+                    } else if (typeKey.indexOf('boliggrupp') !== -1 || typeKey.indexOf('boliggruppe') !== -1) {
+                        fillColor = '#FFD700'; // gul: Boliggrupper
+                    } else if (typeKey.indexOf('enfamil') !== -1 || typeKey.indexOf('en-famil') !== -1 || typeKey.indexOf('en familie') !== -1) {
+                        fillColor = '#2e7d32'; // grøn: Enfamilieboliger
+                    } else if (typeKey.indexOf('bolig') !== -1) {
+                        fillColor = '#FFD700'; // generisk bolig -> gul
+                    }
+
+                    var marker = L.circleMarker([lat, lng], {
+                        radius: 6,
+                        color: fillColor,
+                        weight: 1,
+                        fillColor: fillColor,
+                        fillOpacity: 0.9
+                    });
+
+                    // Gem koordinater som skjult data på markøren (ikke vist i popup)
+                    marker._coords = { lat: lat, lng: lng };
+                    // Gem årstal på markøren (nummer eller NaN)
+                    var yearNum = parseInt(String(årstal).replace(/[^\d\-]/g, ''), 10);
+                    marker._year = isFinite(yearNum) ? yearNum : NaN;
+                    // Gem øvrige felter (kan bruges senere)
+                    marker._meta = { projekt: projekt, adresse: adresse, type: typeByg, note: note };
+                    // Gem række-nummeret (mappe-nummeret)
+                    marker._mappeNr = i + 2; // Starter fra 2 da vi antager første dataræk er Mappe 2
+
+                    var popup = '<div style="min-width:320px;font-size:14px;line-height:1.3;">' +
+                                (projekt ? '<div><strong>Projekt:</strong> ' + projekt + '</div>' : '') +
+                                (adresse ? '<div><strong>Adresse:</strong> ' + adresse + '</div>' : '') +
+                                (årstal ? '<div><strong>Årstal:</strong> ' + årstal + '</div>' : '') +
+                                (typeByg ? '<div><strong>Type:</strong> ' + typeByg + '</div>' : '') +
+                                (note ? '<div><strong>Note:</strong> ' + note + '</div>' : '') +
+                                '<div id="popup-images-' + (i + 2) + '" style="margin-top:10px;">Indlæser billeder...</div>' +
+                                '</div>';
+ 
+                    marker.bindPopup(popup, { 
+                        maxWidth: 450, 
+                        minWidth: 320,
+                        closeButton: true,
+                        autoClose: false,
+                        closeOnEscapeKey: true
+                    });
+                    
+                    // Når popup åbnes, indlæs billeder
+                    marker.on('popupopen', function() {
+                        loadImagesForMarker(this._mappeNr);
+                    });
+                    // Gem i master-listen og i layeret (initialt synligt)
+                    allMarkers.push(marker);
+                    lokaliteterLayer.addLayer(marker);
+                    added++;
+                });
+ 
+                console.log('Markers tilføjet fra Excel:', added);
+                // Opdater tællerne efter indlæsning
+                updateTypeCounts();
+                // Opsæt år-slider hvis vi har årstal
+                var years = allMarkers.map(function(m){ return m._year; }).filter(isFinite);
+                if (years.length > 0) {
+                    var minY = Math.min.apply(null, years);
+                    var maxY = Math.max.apply(null, years);
+                    // Start sliderens mindste værdi ved 1900 så kortet kan være blankt til 1900
+                    var startMin = 1900;
+                    updateYearFilterUI(startMin, maxY);
+                     // initial filter (vis alle mellem min og max)
+                     applyYearFilter();
+                } else {
+                    // Hvis ingen årstal, skjul år-filter label
+                    document.getElementById('yrMinLbl').textContent = '—';
+                    document.getElementById('yrMaxLbl').textContent = '—';
+                }
+                // Tilføj lokaliteter-laget til kortet automatisk
+                if (added > 0) {
+                    lokaliteterLayer.addTo(map);
+                    // Tilføj også til layer control så det kan tændes/slukkes
+                    layerControl.addOverlay(lokaliteterLayer, 'Lokaliteter (Excel)');
+                } else {
+                    console.warn('Ingen gyldige punkter fundet i Excel-filen.');
+                }
+             }).catch(function(err){
+                 console.error('Kunne ikke indlæse eller parse Excel:', err);
+             });
+         }
+
+        // Indlæs Excel med 100 punkter
+        loadExcelToMap('./oversigt_over_gartnerierne.xlsx');
+
+        // Start med OSM som baggrund og historisk kort som overlay
+        osm.addTo(map);
+        historiskKort1912.addTo(map);
+        
+        // Legend (bottom-left) med farveforklaring
+        var legend = L.control({position: 'bottomleft'});
+        legend.onAdd = function(map) {
+            var div = L.DomUtil.create('div', 'legend');
+            div.style.background = 'rgba(255,255,255,0.95)';
+            div.style.padding = '6px 8px';
+            div.style.margin = '6px';
+            div.style.border = '1px solid rgba(0,0,0,0.15)';
+            div.style.borderRadius = '4px';
+            div.style.fontSize = '12px';
+            div.style.boxShadow = '0 1px 4px rgba(0,0,0,0.2)';
+            div.innerHTML =
+                '<div style="font-weight:600;margin-bottom:6px;">Farver (Type af byggeri)</div>' +
+                '<div style="margin-bottom:4px;"><span style="display:inline-block;width:12px;height:12px;background:#B22222;margin-right:8px;border:1px solid rgba(0,0,0,0.08);vertical-align:middle"></span>Offentlige bygninger <span id="count-offentlig" style="font-weight:600;color:#B22222;">(0)</span></div>' +
+                '<div style="margin-bottom:4px;"><span style="display:inline-block;width:12px;height:12px;background:#1E90FF;margin-right:8px;border:1px solid rgba(0,0,0,0.08);vertical-align:middle"></span>Erhvervsbyggerier <span id="count-erhverv" style="font-weight:600;color:#1E90FF;">(0)</span></div>' +
+                '<div style="margin-bottom:4px;"><span style="display:inline-block;width:12px;height:12px;background:#FFD700;margin-right:8px;border:1px solid rgba(0,0,0,0.08);vertical-align:middle"></span>Boliggrupper <span id="count-bolig" style="font-weight:600;color:#FFD700;">(0)</span></div>' +
+                '<div><span style="display:inline-block;width:12px;height:12px;background:#2e7d32;margin-right:8px;border:1px solid rgba(0,0,0,0.08);vertical-align:middle"></span>Enfamilieboliger <span id="count-enfamilie" style="font-weight:600;color:#2e7d32;">(0)</span></div>';
+            L.DomEvent.disableClickPropagation(div);
+            return div;
+        };
+        legend.addTo(map);
+
+        // Footer (bottom-right) med kun dit navn
+        var footer = L.control({position: 'bottomright'});
+        footer.onAdd = function(map) {
+            var div = L.DomUtil.create('div', 'map-footer');
+            div.style.background = 'transparent';
+            div.style.padding = '4px 8px';
+            div.style.margin = '6px';
+            div.style.fontSize = '12px';
+            div.style.color = '#222';
+            div.style.opacity = '0.95';
+            div.style.pointerEvents = 'none';
+            div.innerHTML = 'Erik Oehlerich';
+            return div;
+        };
+        footer.addTo(map);
+
+        // Det manuelle skolepunkt er fjernet (marker oprettes nu kun fra Excel-data)
+        // Tilføj søgefunktion
+        var geocoder = L.Control.geocoder({
+            defaultMarkGeocode: false,
+            position: 'topleft',
+            placeholder: 'Søg efter adresse...',
+            geocoder: new L.Control.Geocoder.Nominatim({
+                language: 'da' // Dansk sprog
+            })
+        }).addTo(map);
+
+        // Håndter søgeresultater
+        geocoder.on('markgeocode', function(e) {
+            var bbox = e.geocode.bbox;
+            var poly = L.polygon([
+                bbox.getSouthEast(),
+                bbox.getNorthEast(),
+                bbox.getNorthWest(),
+                bbox.getSouthWest()
+            ]);
+            map.fitBounds(poly.getBounds());
+        });
+    </script>
+</body>
+</html>
