@@ -109,6 +109,18 @@
             updateWhenIdle: true
         });
 
+        var historiskKortAarslev1908_1938 = L.tileLayer('../Aarslev_Kort_1908_1938/{z}/{x}/{y}.png', {
+            attribution: '© Erik Oehlerich',
+            minZoom: 10,
+            maxZoom: 19,
+            tileSize: 256,
+            opacity: 1.0,
+            bounds: [[55.9, 9.9], [56.4, 10.4]],
+            noWrap: true,
+            errorTileUrl: '',
+            updateWhenIdle: true
+        });
+
         var historiskKort1953_1976 = L.tileLayer('../1953-1976/{z}/{x}/{y}.png', {
             attribution: '© Kortarkivet 1953-1976',
             minZoom: 10,
@@ -134,7 +146,7 @@
         });
 
         // Samling af historiske overlays (bruges til initial visning og opacity-kontrol)
-        var historiskeOverlays = [historiskKort1840_1890, historiskKort1912, historiskKort1953_1976, historiskKort1980];
+        var historiskeOverlays = [historiskKort1840_1890, historiskKort1912, historiskKortAarslev1908_1938, historiskKort1953_1976, historiskKort1980];
 
         // Definér base og overlay maps
         var baseMaps = {
@@ -210,6 +222,17 @@
             }, 2000);
         };
 
+        function updateMapTitle() {
+            var titleEl = document.getElementById('map-title');
+            if (!titleEl) return;
+
+            if (map.hasLayer(historiskKortAarslev1908_1938)) {
+                titleEl.textContent = 'Gartnerier i Årslev – kort 1908-1938';
+            } else {
+                titleEl.textContent = 'Gartnerier i Brabrand – kort fra 1912';
+            }
+        }
+
         // Håndter aktivering/deaktivering via layer-control
         map.on('overlayadd', function(e) {
             if (e.layer === koordinatGruppe) {
@@ -217,6 +240,7 @@
                 koordinatInfo.addTo(map);
                 map.on('click', clickHandler);
             }
+            updateMapTitle();
         });
         map.on('overlayremove', function(e) {
             if (e.layer === koordinatGruppe) {
@@ -228,6 +252,7 @@
                     marker = null;
                 }
             }
+            updateMapTitle();
         });
         
         // Hvis brugeren vil have koordinatværktøjet aktivt ved load, kan man tilføje:
@@ -238,6 +263,7 @@
         // Opdateret overlay maps — alle historiske lag og koordinat-vælger
         var overlayMaps = {
             "Brabrand 1912": historiskKort1912,
+            "Årslev 1908-1938": historiskKortAarslev1908_1938,
             "Kort 1840-1890": historiskKort1840_1890,
             "Kort 1953-1976": historiskKort1953_1976,
             "Kort 1980": historiskKort1980,
@@ -252,6 +278,7 @@
             historiskKort1912.addTo(map);
             if (typeof historiskKort1912.setZIndex === 'function') historiskKort1912.setZIndex(100);
         }
+        updateMapTitle();
 
         // Opacity-kontrol til historiske overlay (kompakt, foldbar)
         var opacityControl = L.control({ position: 'topright' });
