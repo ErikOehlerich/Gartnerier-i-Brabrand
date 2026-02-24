@@ -46,7 +46,9 @@ def list_punkt_files(folder_path):
                     images.append(filename)
             else:
                 files.append(filename)
-    return sorted(images), sorted(files)
+    unique_images = sorted(set(images), key=lambda s: s.lower())
+    unique_files = sorted(set(files), key=lambda s: s.lower())
+    return unique_images, unique_files
 
 punkt_dirs = []
 for name in os.listdir(BASE_DIR):

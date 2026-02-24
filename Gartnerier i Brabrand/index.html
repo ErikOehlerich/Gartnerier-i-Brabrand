@@ -457,6 +457,11 @@
             var minLbl = document.getElementById('yrMinLbl');
             var maxLbl = document.getElementById('yrMaxLbl');
             if (!minInput || !maxInput) return;
+            if (min > max) {
+                var temp = min;
+                min = max;
+                max = temp;
+            }
             minInput.min = min;
             minInput.max = max;
             maxInput.min = min;
@@ -882,6 +887,8 @@
                 console.log('Starter parsing af', rows.length, 'rækker...');
 
                 var added = 0;
+                var rowsWithCoords = 0;
+                var rowsInvalidCoords = 0;
                 function isBlankValue(v) {
                     return v === null || v === undefined || String(v).trim() === '';
                 }
@@ -897,6 +904,7 @@
                 }
 
                 rows.forEach(function(row, i) {
+                    try {
                     if (added >= MAX_POINTS) return;
 
                     // Hent alle Excel-kolonner
@@ -923,26 +931,71 @@
                         return parseFloat(s);
                     }
 
-                    if (row['Lat'] !== undefined && row['Lng'] !== undefined) {
-                        lat = parseNumber(row['Lat']);
-                        lng = parseNumber(row['Lng']);
-                    } else if (row['Latitude'] !== undefined && row['Longitude'] !== undefined) {
-                        lat = parseNumber(row['Latitude']);
-                        lng = parseNumber(row['Longitude']);
-                    } else if (row['Koordinater'] || row['Koordinat'] || row['Coordinates']) {
-                        var coordStr = (row['Koordinater'] || row['Koordinat'] || row['Coordinates']).toString();
+                    function extractLatLngFromAnyRowValue(rowObj) {
+                        if (!rowObj) return null;
+                        var keys = Object.keys(rowObj);
+                        for (var ri = 0; ri < keys.length; ri++) {
+                            var value = rowObj[keys[ri]];
+                            if (isBlankValue(value)) continue;
+                            var str = String(value);
+                            if (str.length < 5) continue;
+
+                            // Find alle tal (understøt både komma og punktum som decimal)
+                            var numMatches = str.match(/[-+]?\d{1,3}(?:[\.,]\d+)?/g);
+                            if (!numMatches || numMatches.length < 2) continue;
+
+                            for (var ni = 0; ni < numMatches.length - 1; ni++) {
+                                var first = parseNumber(numMatches[ni]);
+                                var second = parseNumber(numMatches[ni + 1]);
+                                if (!isFinite(first) || !isFinite(second)) continue;
+
+                                // Lat,Lng
+                                if (Math.abs(first) <= 90 && Math.abs(second) <= 180) {
+                                    return { lat: first, lng: second };
+                                }
+                                // Lng,Lat
+                                if (Math.abs(first) <= 180 && Math.abs(second) <= 90) {
+                                    return { lat: second, lng: first };
+                                }
+                            }
+                        }
+                        return null;
+                    }
+
+                    var latCell = getFirstValue(row, ['Lat', 'lat', 'Latitude', 'latitude', 'Breddegrad', 'breddegrad']);
+                    var lngCell = getFirstValue(row, ['Lng', 'lng', 'Lon', 'lon', 'Long', 'long', 'Longitude', 'longitude', 'Længdegrad', 'Laengdegrad', 'længdegrad', 'laengdegrad']);
+
+                    if (!isBlankValue(latCell) && !isBlankValue(lngCell)) {
+                        rowsWithCoords++;
+                        lat = parseNumber(latCell);
+                        lng = parseNumber(lngCell);
+                    }
+
+                    var coordCombined = getFirstValue(row, ['Koordinater', 'Koordinat', 'Coordinates', 'Coord', 'coord', 'GPS', 'Gps', 'gps']);
+                    if ((!isFinite(lat) || !isFinite(lng)) && coordCombined) {
+                        rowsWithCoords++;
+                        var coordStr = String(coordCombined);
                         // accepter "lat, lng", "lng;lat" osv.
                         // Split ved komma/semikolon/space
                         var parts = coordStr.split(/[,;\s]+/).filter(function(p){ return p.trim() !== ''; });
                         if (parts.length >= 2) {
                             var a = parseNumber(parts[0]);
                             var b = parseNumber(parts[1]);
-                            // best guess: hvis første værdi > 90 antag lng,lat byttet
                             if (Math.abs(a) > 90 && Math.abs(b) <= 90) {
                                 lng = a; lat = b;
                             } else {
                                 lat = a; lng = b;
                             }
+                        }
+                    }
+
+                    // Sidste fallback: scan alle celler i rækken for et koordinat-par
+                    if (!isFinite(lat) || !isFinite(lng)) {
+                        var fallbackPair = extractLatLngFromAnyRowValue(row);
+                        if (fallbackPair) {
+                            rowsWithCoords++;
+                            lat = fallbackPair.lat;
+                            lng = fallbackPair.lng;
                         }
                     }
 
@@ -961,6 +1014,13 @@
                     if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
                         console.warn('Ser ud som byttede koordinater, bytter automatisk for række:', row);
                         var tmp = lat; lat = lng; lng = tmp;
+                    }
+
+                    // Spring ugyldige koordinater over (må ikke stoppe hele importen)
+                    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+                        rowsInvalidCoords++;
+                        if (i < 10) console.warn('Ugyldige koordinater, springer række over:', lat, lng, row);
+                        return;
                     }
 
                     // Bestem farve baseret på by
@@ -1039,9 +1099,168 @@
                     allMarkers.push(marker);
                     lokaliteterLayer.addLayer(marker);
                     added++;
+                    } catch (rowErr) {
+                        if (i < 10) console.warn('Fejl ved parsing af række, springer over:', rowErr, row);
+                    }
                 });
+
+                // Nød-fallback: hvis normal objekt-parsing ikke gav markører,
+                // så parse arket som rå matrix (header:1) og find koordinater direkte.
+                if (added === 0) {
+                    var matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+                    if (matrix && matrix.length > 1) {
+                        console.warn('Objekt-parsing gav 0 markører; forsøger matrix-fallback.');
+
+                        function normHeader(v) {
+                            return String(v || '')
+                                .toLowerCase()
+                                .replace(/å/g, 'aa')
+                                .replace(/æ/g, 'ae')
+                                .replace(/ø/g, 'oe')
+                                .replace(/[^a-z0-9]/g, '');
+                        }
+
+                        function parseNumberFallback(v) {
+                            if (v === null || v === undefined) return NaN;
+                            var s = String(v).trim();
+                            if (!s) return NaN;
+                            return parseFloat(s.replace(',', '.'));
+                        }
+
+                        function extractPairFromText(text) {
+                            var matches = String(text || '').match(/[-+]?\d{1,3}(?:[\.,]\d+)?/g);
+                            if (!matches || matches.length < 2) return null;
+                            for (var mi = 0; mi < matches.length - 1; mi++) {
+                                var a = parseNumberFallback(matches[mi]);
+                                var b = parseNumberFallback(matches[mi + 1]);
+                                if (!isFinite(a) || !isFinite(b)) continue;
+                                if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return { lat: a, lng: b };
+                                if (Math.abs(a) <= 180 && Math.abs(b) <= 90) return { lat: b, lng: a };
+                            }
+                            return null;
+                        }
+
+                        function firstIndex(headers, candidates) {
+                            for (var ci = 0; ci < candidates.length; ci++) {
+                                var idx = headers.indexOf(candidates[ci]);
+                                if (idx !== -1) return idx;
+                            }
+                            return -1;
+                        }
+
+                        var headerNorm = (matrix[0] || []).map(normHeader);
+                        var idxPunkt = firstIndex(headerNorm, ['punktnr', 'punktnr', 'punkt', 'nr', 'id']);
+                        var idxBy = firstIndex(headerNorm, ['by']);
+                        var idxEjer = firstIndex(headerNorm, ['ejer', 'ejerbruger']);
+                        var idxMatrikel = firstIndex(headerNorm, ['matrikel']);
+                        var idxAdresse = firstIndex(headerNorm, ['adresse', 'address']);
+                        var idxAar = firstIndex(headerNorm, ['aarstal', 'aar', 'year']);
+                        var idxAfgr = firstIndex(headerNorm, ['afgroeder']);
+                        var idxNavn = firstIndex(headerNorm, ['navnetpaagartneriet', 'navn', 'gartneriet']);
+                        var idxKilder = firstIndex(headerNorm, ['kilder', 'kilde']);
+                        var idxAndet = firstIndex(headerNorm, ['andet', 'note', 'bemaerkning']);
+                        var idxLat = firstIndex(headerNorm, ['lat', 'latitude', 'breddegrad']);
+                        var idxLng = firstIndex(headerNorm, ['lng', 'lon', 'long', 'longitude', 'laengdegrad']);
+                        var idxCoord = firstIndex(headerNorm, ['koordinater', 'koordinat', 'coordinates', 'coord', 'gps']);
+
+                        for (var r = 1; r < matrix.length; r++) {
+                            if (added >= MAX_POINTS) break;
+                            var rowA = matrix[r] || [];
+
+                            var lat = NaN, lng = NaN;
+                            if (idxLat !== -1 && idxLng !== -1) {
+                                lat = parseNumberFallback(rowA[idxLat]);
+                                lng = parseNumberFallback(rowA[idxLng]);
+                            }
+
+                            if ((!isFinite(lat) || !isFinite(lng)) && idxCoord !== -1) {
+                                var p = extractPairFromText(rowA[idxCoord]);
+                                if (p) { lat = p.lat; lng = p.lng; }
+                            }
+
+                            if (!isFinite(lat) || !isFinite(lng)) {
+                                for (var c = 0; c < rowA.length; c++) {
+                                    var p2 = extractPairFromText(rowA[c]);
+                                    if (p2) { lat = p2.lat; lng = p2.lng; break; }
+                                }
+                            }
+
+                            if (!isFinite(lat) || !isFinite(lng)) continue;
+                            if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+
+                            var punktNr = idxPunkt !== -1 ? rowA[idxPunkt] : '';
+                            var by = idxBy !== -1 ? rowA[idxBy] : '';
+                            var ejer = idxEjer !== -1 ? rowA[idxEjer] : '';
+                            var matrikel = idxMatrikel !== -1 ? rowA[idxMatrikel] : '';
+                            var adresse = idxAdresse !== -1 ? rowA[idxAdresse] : '';
+                            var årstal = idxAar !== -1 ? rowA[idxAar] : '';
+                            var afgrøder = idxAfgr !== -1 ? rowA[idxAfgr] : '';
+                            var navn = idxNavn !== -1 ? rowA[idxNavn] : '';
+                            var kilder = idxKilder !== -1 ? rowA[idxKilder] : '';
+                            var andet = idxAndet !== -1 ? rowA[idxAndet] : '';
+
+                            var byKey = String(by || '').toLowerCase();
+                            var fillColor = '#22AA44';
+                            if (byKey.indexOf('brabrand') !== -1) fillColor = '#2E7D32';
+                            else if (byKey.indexOf('gellerup') !== -1) fillColor = '#4CAF50';
+                            else if (byKey.indexOf('årslev') !== -1 || byKey.indexOf('aarslev') !== -1) fillColor = '#66BB6A';
+                            else if (byKey.indexOf('hasle') !== -1) fillColor = '#81C784';
+                            else if (String(by || '').trim() !== '') fillColor = '#A5D6A7';
+
+                            var mappeParsed = parseInt(String(punktNr || '').replace(/[^0-9]/g, ''), 10);
+                            var mappeNr = isFinite(mappeParsed) ? mappeParsed : r;
+                            var punktText = String(punktNr || '').trim() || String(mappeNr);
+                            if (punktText.length > 4) punktText = punktText.substring(0, 4);
+
+                            var markerHtml = '<div class="punkt-marker" style="background:' + fillColor + ';">' + punktText + '</div>';
+                            var markerIcon = L.divIcon({
+                                html: markerHtml,
+                                className: 'punkt-marker-wrapper',
+                                iconSize: [24, 24],
+                                iconAnchor: [12, 12],
+                                popupAnchor: [0, -12]
+                            });
+
+                            var marker = L.marker([lat, lng], { icon: markerIcon });
+                            marker._coords = { lat: lat, lng: lng };
+                            var yearNum = parseInt(String(årstal || '').replace(/[^\d\-]/g, ''), 10);
+                            marker._year = isFinite(yearNum) ? yearNum : NaN;
+                            marker._meta = { punktNr: punktNr, by: by, ejer: ejer, matrikel: matrikel, adresse: adresse, afgrøder: afgrøder, navn: navn, kilder: kilder, andet: andet };
+                            marker._mappeNr = mappeNr;
+
+                            var popup = '<div style="min-width:320px;font-size:14px;line-height:1.4;">' +
+                                        (punktNr ? '<div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #ddd;"><strong>Punkt nr:</strong> ' + punktNr + '</div>' : '') +
+                                        (navn ? '<div style="margin-bottom:4px;font-size:15px;color:#2E7D32;font-weight:600;">' + navn + '</div>' : '') +
+                                        (ejer ? '<div style="margin-bottom:4px;"><strong>Ejer:</strong> ' + ejer + '</div>' : '') +
+                                        (by ? '<div style="margin-bottom:4px;"><strong>By:</strong> ' + by + '</div>' : '') +
+                                        (adresse ? '<div style="margin-bottom:4px;"><strong>Adresse:</strong> ' + adresse + '</div>' : '') +
+                                        (matrikel ? '<div style="margin-bottom:4px;"><strong>Matrikel:</strong> ' + matrikel + '</div>' : '') +
+                                        (årstal ? '<div style="margin-bottom:4px;"><strong>Årstal:</strong> ' + årstal + '</div>' : '') +
+                                        (afgrøder ? '<div style="margin-bottom:4px;"><strong>Afgrøder:</strong> ' + afgrøder + '</div>' : '') +
+                                        (kilder ? '<div style="margin-bottom:4px;"><strong>Kilder:</strong> ' + kilder + '</div>' : '') +
+                                        (andet ? '<div style="margin-bottom:4px;"><strong>Andet:</strong> ' + andet + '</div>' : '') +
+                                        '<div id="popup-images-' + marker._mappeNr + '" style="margin-top:10px;">Indlæser billeder...</div>' +
+                                        '</div>';
+
+                            marker.bindPopup(popup, {
+                                maxWidth: 450,
+                                minWidth: 320,
+                                closeButton: true,
+                                autoClose: false,
+                                closeOnEscapeKey: true
+                            });
+                            marker.on('popupopen', function() { loadImagesForMarker(this._mappeNr); });
+
+                            allMarkers.push(marker);
+                            lokaliteterLayer.addLayer(marker);
+                            added++;
+                            rowsWithCoords++;
+                        }
+                    }
+                }
  
                 console.log('Markers tilføjet fra Excel:', added);
+                console.log('Excel diagnose - rækker:', rows.length, 'med koordinatdata:', rowsWithCoords, 'ugyldige koordinater:', rowsInvalidCoords, 'tilføjet:', added);
                 // Opdater tællerne efter indlæsning
                 updateTypeCounts();
                 // Opsæt år-slider hvis vi har årstal
@@ -1049,8 +1268,8 @@
                 if (years.length > 0) {
                     var minY = Math.min.apply(null, years);
                     var maxY = Math.max.apply(null, years);
-                    // Start sliderens mindste værdi ved 1900 så kortet kan være blankt til 1900
-                    var startMin = 1900;
+                    // Start ved datasættets minimum så markører ikke skjules ved indlæsning
+                    var startMin = minY;
                     updateYearFilterUI(startMin, maxY);
                      // initial filter (vis alle mellem min og max)
                      applyYearFilter();
