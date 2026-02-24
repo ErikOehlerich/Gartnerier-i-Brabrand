@@ -33,6 +33,22 @@
             box-shadow: 0 1px 4px rgba(0,0,0,0.2);
             pointer-events: none;
         }
+        .punkt-marker {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 2px solid #ffffff;
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+            box-sizing: border-box;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.35);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+        }
     </style>
 </head>
 <body>
@@ -330,6 +346,7 @@
 
         // Opret lag til lokaliteter (så det kan toggles)
         var lokaliteterLayer = L.layerGroup();
+        var lokaliteterOverlayAdded = false;
         // Liste over alle markører (bruges til filtrering)
         var allMarkers = [];
         // Vis alle punkter (ingen max)
@@ -826,7 +843,12 @@
         // Funktion: indlæs Excel (xlsx) fra en sti og tilføj punkter til lokaliteterLayer
         function loadExcelToMap(path) {
             console.log('Forsøger at indlæse Excel fra:', path);
-            fetch(encodeURI(path)).then(function(resp) {
+            // Ryd tidligere markører så opdateringer i Excel vises korrekt ved genindlæsning
+            lokaliteterLayer.clearLayers();
+            allMarkers = [];
+
+            var cacheBustedPath = path + (path.indexOf('?') === -1 ? '?' : '&') + 'v=' + Date.now();
+            fetch(encodeURI(cacheBustedPath), { cache: 'no-store' }).then(function(resp) {
                 console.log('Fetch response:', resp.status, resp.statusText);
                 if (!resp.ok) throw new Error('Fetch fejlede: ' + resp.status + ' ' + resp.statusText);
                 return resp.arrayBuffer();
@@ -956,13 +978,27 @@
                         fillColor = '#A5D6A7'; // Lys mint: Andre byer
                     }
 
-                    var marker = L.circleMarker([lat, lng], {
-                        radius: 8,
-                        color: '#ffffff',
-                        weight: 2,
-                        fillColor: fillColor,
-                        fillOpacity: 0.95
+                    // Gem række-nummeret (mappe-nummeret) - helst fra Excel, ellers fallback
+                    var mappeCell = getFirstValue(row, ['Punkt  nr.', 'Punkt nr.', 'Punkt nr', 'Mappe', 'Mappe nr', 'Mappe nr.', 'MappeNr', 'MappeNr.', 'Mappe nummer', 'Mappe-nummer', 'Punkt', 'Nr', 'ID']);
+                    var mappeParsed = parseInt(String(mappeCell).replace(/[^0-9]/g, ''), 10);
+                    var mappeNr = isFinite(mappeParsed) ? mappeParsed : (i + 1); // fallback: række 1 -> punkt 1
+
+                    var punktTextRaw = String(punktNr || '').trim();
+                    var punktText = punktTextRaw !== '' ? punktTextRaw : String(mappeNr);
+                    if (punktText.length > 4) {
+                        punktText = punktText.substring(0, 4);
+                    }
+
+                    var markerHtml = '<div class="punkt-marker" style="background:' + fillColor + ';">' + punktText + '</div>';
+                    var markerIcon = L.divIcon({
+                        html: markerHtml,
+                        className: 'punkt-marker-wrapper',
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 12],
+                        popupAnchor: [0, -12]
                     });
+
+                    var marker = L.marker([lat, lng], { icon: markerIcon });
 
                     // Gem koordinater som skjult data på markøren (ikke vist i popup)
                     marker._coords = { lat: lat, lng: lng };
@@ -971,10 +1007,7 @@
                     marker._year = isFinite(yearNum) ? yearNum : NaN;
                     // Gem alle felter
                     marker._meta = { punktNr: punktNr, by: by, ejer: ejer, matrikel: matrikel, adresse: adresse, afgrøder: afgrøder, navn: navn, kilder: kilder, andet: andet };
-                    // Gem række-nummeret (mappe-nummeret) - helst fra Excel, ellers fallback
-                    var mappeCell = getFirstValue(row, ['Punkt  nr.', 'Punkt nr.', 'Punkt nr', 'Mappe', 'Mappe nr', 'Mappe nr.', 'MappeNr', 'MappeNr.', 'Mappe nummer', 'Mappe-nummer', 'Punkt', 'Nr', 'ID']);
-                    var mappeParsed = parseInt(String(mappeCell).replace(/[^0-9]/g, ''), 10);
-                    marker._mappeNr = isFinite(mappeParsed) ? mappeParsed : (i + 1); // fallback: række 1 -> punkt 1
+                    marker._mappeNr = mappeNr;
 
                     var popup = '<div style="min-width:320px;font-size:14px;line-height:1.4;">' +
                                 (punktNr ? '<div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #ddd;"><strong>Punkt nr:</strong> ' + punktNr + '</div>' : '') +
@@ -1030,7 +1063,10 @@
                 if (added > 0) {
                     lokaliteterLayer.addTo(map);
                     // Tilføj også til layer control så det kan tændes/slukkes
-                    layerControl.addOverlay(lokaliteterLayer, 'Lokaliteter (Excel)');
+                    if (!lokaliteterOverlayAdded) {
+                        layerControl.addOverlay(lokaliteterLayer, 'Lokaliteter (Excel)');
+                        lokaliteterOverlayAdded = true;
+                    }
                 } else {
                     console.warn('Ingen gyldige punkter fundet i Excel-filen.');
                 }
