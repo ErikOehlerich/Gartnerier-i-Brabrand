@@ -173,8 +173,20 @@
             updateWhenIdle: true
         });
 
+        var historiskKortGellerup1887_1938 = L.tileLayer('../Gellerup_1887_1938/{z}/{x}/{y}.png', {
+            attribution: '© Erik Oehlerich',
+            minZoom: 10,
+            maxZoom: 19,
+            tileSize: 256,
+            opacity: 1.0,
+            bounds: [[55.9, 9.9], [56.4, 10.4]],
+            noWrap: true,
+            errorTileUrl: '',
+            updateWhenIdle: true
+        });
+
         // Samling af historiske overlays (bruges til initial visning og opacity-kontrol)
-        var historiskeOverlays = [historiskKort1840_1890, historiskKort1912, historiskKortAarslev1908_1938, historiskKort1953_1976, historiskKort1980, historiskKortTrueby1891_1938];
+        var historiskeOverlays = [historiskKort1840_1890, historiskKort1912, historiskKortAarslev1908_1938, historiskKort1953_1976, historiskKort1980, historiskKortTrueby1891_1938, historiskKortGellerup1887_1938];
 
         // Definér base og overlay maps
         var baseMaps = {
@@ -254,8 +266,12 @@
             var titleEl = document.getElementById('map-title');
             if (!titleEl) return;
 
-            if (map.hasLayer(historiskKortAarslev1908_1938)) {
+            if (map.hasLayer(historiskKortGellerup1887_1938)) {
+                titleEl.textContent = 'Gartnerier i Gellerup – kort 1887-1938';
+            } else if (map.hasLayer(historiskKortAarslev1908_1938)) {
                 titleEl.textContent = 'Gartnerier i Årslev – kort 1908-1938';
+            } else if (map.hasLayer(historiskKortTrueby1891_1938)) {
+                titleEl.textContent = 'Gartnerier i Trueby – kort 1891-1938';
             } else {
                 titleEl.textContent = 'Gartnerier i Brabrand – kort fra 1912';
             }
@@ -293,6 +309,7 @@
             "Brabrand 1912": historiskKort1912,
             "Årslev 1908-1938": historiskKortAarslev1908_1938,
             "Trueby 1891-1938": historiskKortTrueby1891_1938,
+            "Gellerup 1887-1938": historiskKortGellerup1887_1938,
             "Kort 1840-1890": historiskKort1840_1890,
             "Kort 1953-1976": historiskKort1953_1976,
             "Kort 1980": historiskKort1980,
