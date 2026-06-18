@@ -113,7 +113,7 @@
             updateWhenIdle: true
         });
 
-        var historiskKort1912 = L.tileLayer('./Kort_fra_1912/{z}/{x}/{y}.png', {
+        var historiskKort1912 = L.tileLayer('./Gartnerier i Brabrand/Kort_fra_1912/{z}/{x}/{y}.png', {
             attribution: '© Erik Oehlerich',
             minZoom: 10,
             maxZoom: 19,
@@ -1325,7 +1325,7 @@
          }
 
         // Indlæs Excel med alle punkter
-        loadExcelToMap('./oversigt_over_gartnerierne.xlsx');
+        loadExcelToMap('./Gartnerier i Brabrand/oversigt_over_gartnerierne.xlsx');
 
         // Start med OSM som baggrund og historisk kort som overlay
         osm.addTo(map);
